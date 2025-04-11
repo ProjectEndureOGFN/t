@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chat Application</title>
+</head>
+<body>
+    <h1>AI Chat Application</h1>
+    
+    <div id="chat-container">
+        <div id="chat-messages"></div>
+        
+        <div id="input-container">
+            <textarea id="message-input" placeholder="Type your message here..."></textarea>
+            <button id="send-button">Send</button>
+        </div>
+        
+        <div id="settings-container">
+            <h3>Settings</h3>
+            <div>
+                <label for="temperature">Temperature:</label>
+                <input type="number" id="temperature" min="0" max="1" step="0.1" value="0.7">
+            </div>
+            <div>
+                <label for="max-tokens">Max Tokens:</label>
+                <input type="number" id="max-tokens" min="1" max="2048" value="1024">
+            </div>
+            <div>
+                <label for="system-prompt">System Prompt:</label>
+                <textarea id="system-prompt">You are a helpful AI assistant.</textarea>
+            </div>
+            <div>
+                <label for="keep-history">Keep History:</label>
+                <input type="checkbox" id="keep-history" checked>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Chat application state
+        const state = {
+            sessionId: null,
+            messages: [],
+            isWaiting: false
+        };
+
+        // DOM Elements
+        const chatMessages = document.getElementById('chat-messages');
+        const messageInput = document.getElementById('message-input');
+        const sendButton = document.getElementById('send-button');
+        const temperatureInput = document.getElementById('temperature');
+        const maxTokensInput = document.getElementById('max-tokens');
+        const systemPromptInput = document.getElementById('system-prompt');
+        const keepHistoryInput = document.getElementById('keep-history');
+
+        // Load session from localStorage if available
+        function loadSession() {
+            const savedSessionId = localStorage.getItem('chatSessionId');
+            if (savedSessionId) {
+                state.sessionId = savedSessionId;
+                console.log('Loaded session:', state.sessionId);
+            }
+            
+            // Load previous messages if available
+            const savedMessages = localStorage.getItem('chatMessages');
+            if (savedMessages) {
+                try {
+                    state.messages = JSON.parse(savedMessages);
+                    renderMessages();
+                } catch (e) {
+                    console.error('Failed to parse saved messages:', e);
+                }
+            }
+        }
+
+        // Save session to localStorage
+        function saveSession() {
+            if (state.sessionId) {
+                localStorage.setItem('chatSessionId', state.sessionId);
+                localStorage.setItem('chatMessages', JSON.stringify(state.messages));
+            }
+        }
+
+        // Render messages in the chat window
+        function renderMessages() {
+            chatMessages.innerHTML = '';
+            
+            state.messages.forEach(msg => {
+                const messageElement = document.createElement('div');
+                messageElement.className = `message ${msg.role}`;
+                
+                // Create message header (User/AI)
+                const header = document.createElement('div');
+                header.className = 'message-header';
+                header.textContent = msg.role === 'user' ? 'You:' : 'AI:';
+                messageElement.appendChild(header);
+                
+                // Create message content
+                const content = document.createElement('div');
+                content.className = 'message-content';
+                
+                // Handle content with file references
+                if (msg.fileId) {
+                    content.innerHTML = `${msg.content}<br><a href="/content/${msg.fileId}" target="_blank">View full content</a>`;
+                } else {
+                    content.textContent = msg.content;
+                }
+                
+                messageElement.appendChild(content);
+                chatMessages.appendChild(messageElement);
+            });
+            
+            // Scroll to bottom
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Add a new message to the chat
+        function addMessage(role, content, metadata = {}) {
+            const message = {
+                role,
+                content,
+                timestamp: new Date().toISOString(),
+                ...metadata
+            };
+            
+            state.messages.push(message);
+            renderMessages();
+            saveSession();
+        }
+
+        // Send message to the API
+        async function sendMessage() {
+            const messageText = messageInput.value.trim();
+            if (!messageText || state.isWaiting) return;
+            
+            // Clear input and show waiting state
+            messageInput.value = '';
+            state.isWaiting = true;
+            sendButton.disabled = true;
+            sendButton.textContent = 'Sending...';
+            
+            // Add user message to chat
+            addMessage('user', messageText);
+            
+            // Build request URL with parameters
+            const params = new URLSearchParams({
+                message: messageText,
+                temperature: temperatureInput.value,
+                max_tokens: maxTokensInput.value,
+                system: systemPromptInput.value,
+                keep_history: keepHistoryInput.checked
+            });
+            
+            // Add session ID if available
+            if (state.sessionId) {
+                params.append('session_id', state.sessionId);
+            }
+            
+            try {
+                const response = await fetch(`https://spaceaimage.reaai.workers.dev/text?message=${params.toString()}`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Save session ID if this is first message
+                    if (!state.sessionId && data.session_id) {
+                        state.sessionId = data.session_id;
+                        saveSession();
+                    }
+                    
+                    // Add AI response to chat
+                    const metadata = data.file_id ? {
+                        fileId: data.file_id,
+                        contentUrl: data.content_url
+                    } : {};
+                    
+                    addMessage('assistant', data.generated_text, metadata);
+                    
+                    // Show token usage if available
+                    if (data.prompt_tokens && data.completion_tokens) {
+                        console.log(`Token usage: ${data.prompt_tokens} (prompt) + ${data.completion_tokens} (completion) = ${data.total_tokens} total`);
+                    }
+                } else {
+                    // Show error in chat
+                    addMessage('system', `Error: ${data.error_message || 'Unknown error'}`);
+                }
+            } catch (error) {
+                console.error('API request failed:', error);
+                addMessage('system', `Error: Could not connect to API. ${error.message}`);
+            } finally {
+                // Reset waiting state
+                state.isWaiting = false;
+                sendButton.disabled = false;
+                sendButton.textContent = 'Send';
+            }
+        }
+
+        // Initialize the app
+        function init() {
+            // Load session data
+            loadSession();
+            
+            // Set up event listeners
+            sendButton.addEventListener('click', sendMessage);
+            
+            messageInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage();
+                }
+            });
+            
+            // Welcome message
+            if (state.messages.length === 0) {
+                addMessage('system', 'Welcome to the AI Chat Application! Type a message and press Send to start chatting.');
+            }
+        }
+
+        // Start the application
+        init();
+    </script>
+</body>
+</html>
